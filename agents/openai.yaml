@@ -1,0 +1,7 @@
+interface:
+  display_name: "Image2 Professional Generator"
+  short_description: "Generate, edit, and verify polished bitmap images"
+  default_prompt: "Use $image2-generator to create or revise a polished bitmap image from my brief."
+
+policy:
+  allow_implicit_invocation: true
