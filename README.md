@@ -6,14 +6,15 @@
 
 默认网关 `https://kuaikuaiai.top` 是第三方服务，并非 OpenAI 官方域名。
 
-- 只配置该服务专用的 `IMAGE2_API_KEY`，不要使用或共享 Codex、OpenAI 或其他系统的通用密钥。
+- 如果 Codex 已使用 `kuaikuaiai.top` 且凭据保存在 `auth.json`，Skill 可以在严格校验 provider 后复用现有认证，无需重复配置密钥。
+- 其他网关必须使用专用 `IMAGE2_API_KEY`；不得把 Codex 保存的凭据转发到自定义地址。
 - 不要提交真实政府视频、个人信息、内部地址、账号、案件材料或其他敏感数据。
-- 仓库不会读取 `OPENAI_API_KEY` 或 `~/.codex/auth.json`，也不会打印 API 密钥。
+- 脚本只在允许的网关校验通过后读取 `~/.codex/auth.json`，不会读取环境变量 `OPENAI_API_KEY`，也不会打印 API 密钥。
 - API 调用会产生费用；由密钥持有人自行管理额度、审计和吊销。
 
 ## 安装
 
-需要 Python 3.9+ 和支持本地 Skills 的 Codex。
+需要 Python 3.11+ 和支持本地 Skills 的 Codex。
 
 ```bash
 mkdir -p ~/.codex/skills
@@ -21,16 +22,24 @@ git clone https://github.com/xiaopixiu2019/GPT-image-skill.git \
   ~/.codex/skills/image2-generator
 ```
 
-配置专用密钥：
+如果 Codex 当前可以通过 `https://kuaikuaiai.top` 正常回复，并使用文件认证，安装完成后通常无需再配置密钥。脚本只在以下条件全部满足时复用 Codex 认证：
+
+- 当前 `model_provider` 存在于 `model_providers`
+- provider 设置了 `requires_openai_auth = true`
+- `base_url` 使用 HTTPS，且主机精确为 `kuaikuaiai.top`
+- `~/.codex/auth.json` 的 `auth_mode` 为 `apikey`，且存在可用的文件认证
+
+如果 Codex 使用系统钥匙串，或者需要调用其他兼容网关，请配置独立密钥：
 
 ```bash
 export IMAGE2_API_KEY='<your-dedicated-image-api-key>'
 ```
 
-如需使用其他兼容网关或模型名：
+其他兼容网关必须同时设置独立密钥和网关地址：
 
 ```bash
 export IMAGE2_BASE_URL='https://your-compatible-provider.example'
+export IMAGE2_API_KEY='<your-provider-specific-api-key>'
 export IMAGE2_MODEL='gpt-image-2'
 ```
 
@@ -85,7 +94,9 @@ python3 ~/.codex/skills/image2-generator/scripts/generate_image.py \
 
 ## 常见问题
 
-- `No API key found`：当前终端没有设置 `IMAGE2_API_KEY`。
+- `Codex file authentication is unavailable`：Codex 可能使用系统钥匙串，或没有可读的 `auth.json`；请设置 `IMAGE2_API_KEY`。
+- `Codex credentials can only be reused`：当前 Codex provider 不是允许的网关；请为目标网关设置专用 `IMAGE2_API_KEY`。
+- `IMAGE2_BASE_URL requires a dedicated IMAGE2_API_KEY`：自定义网关地址不能复用 Codex 凭据，必须同时设置专用密钥。
 - HTTP `401` / `403`：密钥无效、无权限，或密钥与网关不匹配。
 - HTTP `429`：额度不足或触发限流，请稍后重试或联系服务提供方。
 - 请求超时：检查网络和网关状态；脚本会对部分临时错误进行有限重试。

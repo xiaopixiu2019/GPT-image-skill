@@ -12,13 +12,16 @@ import struct
 import sys
 import tempfile
 import time
+import tomllib
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
 
 DEFAULT_BASE_URL = "https://kuaikuaiai.top"
 DEFAULT_MODEL = "gpt-image-2"
+ALLOWED_CODEX_AUTH_HOST = "kuaikuaiai.top"
 RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504}
 FORMAT_SUFFIXES = {
     "png": {".png"},
@@ -61,11 +64,118 @@ def default_output(output_format: str) -> Path:
     return Path.home() / "Pictures" / "Codex" / f"image2-{timestamp}.{extension}"
 
 
-def load_api_key() -> str:
-    value = os.environ.get("IMAGE2_API_KEY", "").strip()
-    if not value:
-        raise GenerationError("No API key found; set the dedicated IMAGE2_API_KEY.")
-    return value
+def codex_home() -> Path:
+    return Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")).expanduser()
+
+
+def validate_dedicated_gateway(base_url: str) -> str:
+    try:
+        parsed = urllib.parse.urlsplit(base_url)
+        parsed.port
+    except ValueError as exc:
+        raise GenerationError("IMAGE2_BASE_URL is invalid.") from exc
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise GenerationError(
+            "IMAGE2_BASE_URL must be an HTTPS URL without credentials, "
+            "a query, or a fragment."
+        )
+    return base_url.rstrip("/")
+
+
+def validate_codex_gateway(base_url: str) -> str:
+    try:
+        parsed = urllib.parse.urlsplit(base_url)
+        port = parsed.port
+    except ValueError as exc:
+        raise GenerationError("Codex provider has an invalid base_url.") from exc
+    valid_path = parsed.path.rstrip("/") in ("", "/v1")
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != ALLOWED_CODEX_AUTH_HOST
+        or port not in (None, 443)
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or not valid_path
+    ):
+        raise GenerationError(
+            "Codex credentials can only be reused with https://kuaikuaiai.top. "
+            "Set IMAGE2_API_KEY for other gateways."
+        )
+    return base_url.rstrip("/")
+
+
+def load_codex_gateway() -> str:
+    config_path = codex_home() / "config.toml"
+    try:
+        with config_path.open("rb") as handle:
+            config = tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise GenerationError(
+            f"Cannot read Codex provider config from {config_path}. "
+            "Set IMAGE2_API_KEY instead."
+        ) from exc
+    provider_name = config.get("model_provider")
+    providers = config.get("model_providers", {})
+    if not isinstance(provider_name, str) or not isinstance(providers, dict):
+        raise GenerationError(
+            "Codex model_provider configuration is invalid. Set IMAGE2_API_KEY instead."
+        )
+    provider = providers.get(provider_name, {})
+    if not isinstance(provider, dict) or provider.get("requires_openai_auth") is not True:
+        raise GenerationError(
+            "The active Codex provider does not allow guarded credential reuse. "
+            "Set IMAGE2_API_KEY instead."
+        )
+    base_url = provider.get("base_url")
+    if not isinstance(base_url, str):
+        raise GenerationError("The active Codex provider has no valid base_url.")
+    return validate_codex_gateway(base_url)
+
+
+def load_codex_api_key() -> str:
+    auth_path = codex_home() / "auth.json"
+    try:
+        auth = json.loads(auth_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise GenerationError(
+            "Codex file authentication is unavailable. Set IMAGE2_API_KEY; "
+            "OS keychain credentials are not read by this script."
+        ) from exc
+    if not isinstance(auth, dict) or auth.get("auth_mode") != "apikey":
+        raise GenerationError(
+            "Codex is not using active file-based API key authentication. "
+            "Set IMAGE2_API_KEY instead."
+        )
+    value = auth.get("OPENAI_API_KEY")
+    if not isinstance(value, str) or not value.strip():
+        raise GenerationError(
+            "Codex auth.json has no usable API key. Set IMAGE2_API_KEY instead."
+        )
+    return value.strip()
+
+
+def resolve_credentials() -> tuple[str, str]:
+    api_key = os.environ.get("IMAGE2_API_KEY", "").strip()
+    base_override = os.environ.get("IMAGE2_BASE_URL", "").strip()
+    if api_key:
+        base_url = validate_dedicated_gateway(base_override or DEFAULT_BASE_URL)
+        return api_key, base_url
+    if base_override:
+        raise GenerationError(
+            "IMAGE2_BASE_URL requires a dedicated IMAGE2_API_KEY; "
+            "Codex credentials cannot be forwarded to an override."
+        )
+    base_url = load_codex_gateway()
+    return load_codex_api_key(), base_url
 
 
 def build_endpoint(base_url: str) -> str:
@@ -99,9 +209,9 @@ def api_error_message(status: int, raw: bytes) -> str:
         return f"Image API returned HTTP {status} with a non-JSON response."
 
 
-def call_api(payload: dict[str, Any], api_key: str) -> dict[str, Any]:
+def call_api(payload: dict[str, Any], api_key: str, base_url: str) -> dict[str, Any]:
     request = urllib.request.Request(
-        build_endpoint(os.environ.get("IMAGE2_BASE_URL", DEFAULT_BASE_URL)),
+        build_endpoint(base_url),
         data=json.dumps(payload).encode("utf-8"),
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         method="POST",
@@ -228,7 +338,8 @@ def main() -> int:
             )
         )
         return 0
-    response = call_api(payload, load_api_key())
+    api_key, base_url = resolve_credentials()
+    response = call_api(payload, api_key, base_url)
     outputs = save_outputs(response, output, args.force)
     print(
         json.dumps(

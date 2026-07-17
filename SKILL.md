@@ -60,7 +60,7 @@ python3 ~/.codex/skills/image2-generator/scripts/generate_image.py \
   --output /absolute/path/to/final-image.png
 ```
 
-The script requires a dedicated `IMAGE2_API_KEY`. It never reads Codex authentication files and never prints the key. Override the tested defaults only when needed with `IMAGE2_BASE_URL` and `IMAGE2_MODEL`.
+The script first uses a dedicated `IMAGE2_API_KEY`. When it is absent, it may reuse Codex file authentication only after verifying that the active provider has `requires_openai_auth = true`, its HTTPS host is exactly `kuaikuaiai.top`, and `auth_mode` is `apikey`. Never reuse Codex credentials with an `IMAGE2_BASE_URL` override or another host. The script never prints the key. Use a dedicated `IMAGE2_API_KEY` for other compatible providers.
 
 Use `--dry-run` to validate the request without spending a generation. Use `--force` only when the user explicitly wants an existing output replaced. For multiple images, use `--n`; the script adds numbered suffixes.
 
